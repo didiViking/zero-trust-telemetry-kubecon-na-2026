@@ -1,0 +1,18 @@
+# Disposable kind cluster for the zero-trust-telemetry lab.
+# Image pin is duplicated from versions.env on purpose: bootstrap.sh passes --image so
+# versions.env is authoritative; keep the two in sync (lab/scripts/check-versions.sh verifies).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: zt-telemetry-lab
+networking:
+  # Cilium provides the CNI AND NetworkPolicy enforcement. kindnet (kind's default CNI) must
+  # be disabled, otherwise two CNIs fight over the node's CNI config and policies may not be enforced.
+  disableDefaultCNI: true
+  # Non-default CIDRs, to avoid overlapping with other kind clusters on the same Docker network.
+  podSubnet: "10.245.0.0/16"
+  serviceSubnet: "10.97.0.0/16"
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
+  - role: worker
+    image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a

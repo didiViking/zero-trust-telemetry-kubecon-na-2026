@@ -1,0 +1,112 @@
+# CI for the zero-trust-telemetry companion repo.
+#
+# WHAT THIS DOES AND DOES NOT PROVE
+#   * `static` (every push/PR) checks syntax, schemas, rendering and Collector config validity. It does
+#     NOT exercise any security control. A green result means "the files are well-formed", not "mTLS or
+#     NetworkPolicy works". There is deliberately NO status badge for it.
+#   * `integration` (manual only) is the only job that runs the lab and the security tests. It has NOT been
+#     executed on GitHub-hosted runners by the author (tests were run on a local macOS/Docker Desktop
+#     machine); treat its first run as an experiment.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Also run the kind+Cilium integration tests (needs Docker and ~3 GiB RAM)"
+        type: boolean
+        default: false
+
+# Least privilege: jobs can read the repository and nothing else. No secrets are used anywhere.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static checks (not a security-control test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Third-party actions are pinned to full commit SHAs (tag shown for humans; re-verify on update).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: ShellCheck
+        run: |
+          shellcheck --version
+          find . -name '*.sh' -not -path './.git/*' -not -path './lab/.work/*' | xargs shellcheck -x -S warning
+
+      - name: yamllint
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet yamllint==1.37.1
+          "$RUNNER_TEMP/venv/bin/yamllint" -c .yamllint.yaml manifests lab scenarios .github .yamllint.yaml
+
+      - name: Python unit tests and compile checks
+        run: |
+          python3 -I -m py_compile scenarios/poisoned-log/*.py examples/tamper-evident/*.py
+          python3 -I -W error::ResourceWarning examples/tamper-evident/test_chainlog.py
+          scenarios/poisoned-log/test.sh --policy-selftest
+
+      - name: Render overlay with throw-away CA and validate Collector configs (pinned image)
+        run: lab/scripts/validate-collector-config.sh
+
+      - name: Kubernetes schema validation (kubeconform incl. cert-manager CRDs)
+        run: |
+          lab/scripts/render-check.sh "$RUNNER_TEMP/rendered.yaml"
+          docker run --rm -v "$RUNNER_TEMP:/w:ro" ghcr.io/yannh/kubeconform:v0.7.0 \
+            -strict -summary -kubernetes-version 1.34.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /w/rendered.yaml
+
+  integration:
+    name: lab integration tests (manual; unverified on hosted runners)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_integration
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # No `container:` and no privileged flags: kind runs its nodes as Docker containers on the runner's
+    # own Docker daemon, which is what requires a runner where you may start containers (a hosted VM
+    # runner, or a self-hosted runner dedicated to this job). Cilium needs a recent kernel with eBPF;
+    # GitHub-hosted Ubuntu 24.04 VMs are expected to qualify but this is untested here.
+    # Do NOT run this on a runner that also holds credentials for other clusters: the lab uses its own
+    # kubeconfig, but the job still has full control of the runner's Docker daemon.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install kind (version pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          echo "$KIND_SHA256  kind" | sha256sum -c -
+          sudo install -m 0755 kind /usr/local/bin/kind
+        env:
+          # Copied on 2026-11-02 from https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64.sha256sum (same origin
+          # as the binary, so it pins the content but is not an independent trust root).
+          KIND_SHA256: "517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889"
+      - name: Bring up lab, deploy, test
+        run: |
+          make lab-up
+          make deploy
+          make test
+      - name: Upload evidence (sanitized by the harness; review before sharing)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evidence-${{ github.sha }}
+          path: evidence/runs/
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Tear down
+        if: always()
+        run: make lab-down

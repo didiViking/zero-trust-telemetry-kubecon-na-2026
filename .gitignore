@@ -1,0 +1,8 @@
+# Lab-generated state: kubeconfig, rendered files, evidence. Never commit keys or kubeconfigs.
+lab/.kube/
+lab/.work/
+evidence/runs/
+*.key
+*.pem
+__pycache__/
+*.pyc

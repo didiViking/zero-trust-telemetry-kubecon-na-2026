@@ -1,0 +1,75 @@
+# Approved telemetry SOURCE namespace and the identity/network policy its pods need.
+# The sender pods themselves are rendered per-run by lab/scripts/send-telemetry.sh (Jobs).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telemetry-clients
+  labels:
+    kubernetes.io/metadata.name: telemetry-clients
+    telemetry-client: "true"         # matched by the gateway ingress policy (manifests/02)
+    app.kubernetes.io/part-of: zero-trust-telemetry-lab
+    pod-security.kubernetes.io/enforce: restricted
+---
+# A namespace with NO labels granting access and NO NetworkPolicies: used by tests as the
+# "unauthorized source" so that only the gateway's ingress policy (not source-side egress) blocks it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telemetry-untrusted
+  labels:
+    kubernetes.io/metadata.name: telemetry-untrusted
+    app.kubernetes.io/part-of: zero-trust-telemetry-lab
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: traffic-generator
+  namespace: telemetry-clients
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  secretName: traffic-generator-tls
+  commonName: lab-traffic-generator
+  duration: 2160h
+  renewBefore: 360h
+  privateKey: {rotationPolicy: Always, algorithm: ECDSA, size: 256}
+  usages: [client auth]
+  issuerRef: {name: telemetry-ca, kind: ClusterIssuer}
+---
+# Source-side policy. Deny-by-default, then allow ONLY exporter pods to reach the gateway and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: telemetry-clients
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: exporter-egress
+  namespace: telemetry-clients
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  podSelector:
+    matchLabels: {telemetry-exporter: "true"}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: telemetry-secure}
+      podSelector:
+        matchLabels: {app: otel-gateway}
+    ports:
+    - {protocol: TCP, port: 4317}
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: kube-system}
+      podSelector:
+        matchLabels: {k8s-app: kube-dns}
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}

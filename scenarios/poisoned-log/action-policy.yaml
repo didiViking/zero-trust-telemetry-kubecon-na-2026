@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "Authorization policy for actions PROPOSED by automation. Default deny. Telemetry content is never an authorization source. This file is JSON, which is valid YAML 1.2; authorize.py parses it with the Python standard library so the scenario needs no third-party packages.",
+  "default_effect": "deny",
+  "rules": [
+    {
+      "id": "deny-mutations-without-human-approval",
+      "effect": "deny",
+      "reason_code": "DENY_MUTATION_FROM_UNTRUSTED_TELEMETRY",
+      "reason": "Mutating verbs require an out-of-band human approval. Proposals derived from telemetry cannot carry or grant approval.",
+      "match": {"mutating": true}
+    },
+    {
+      "id": "allow-readonly-diagnostics",
+      "effect": "allow",
+      "reason_code": "ALLOW_READONLY_ALLOWLIST",
+      "reason": "Read-only diagnostic verbs on allow-listed kinds within allow-listed namespaces.",
+      "match": {
+        "verbs": ["get", "list", "describe", "logs"],
+        "kinds": ["pods", "events", "deployments"],
+        "namespaces": ["checkout"],
+        "mutating": false
+      }
+    }
+  ]
+}

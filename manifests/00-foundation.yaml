@@ -29,6 +29,11 @@ data:
               client_ca_file: /trust/ca.crt
               reload_interval: 1m
               client_ca_file_reload: true
+    extensions:
+      # Readiness/liveness only. Bound to the pod network but exposes no telemetry data;
+      # reachable by kubelet (host traffic) and not opened to other pods by the NetworkPolicy.
+      health_check:
+        endpoint: 0.0.0.0:13133
     processors:
       memory_limiter:
         check_interval: 1s
@@ -43,6 +48,7 @@ data:
           key_file: /certs/tls.key
           reload_interval: 1m
     service:
+      extensions: [health_check]
       pipelines:
         traces:
           receivers: [otlp]
@@ -79,13 +85,22 @@ spec:
         fsGroup: 10001
       containers:
       - name: collector
-        image: otel/opentelemetry-collector-contrib:0.136.0 # Pin and validate a supported release before deployment
+        image: otel/opentelemetry-collector-contrib:0.163.2 # Config validated against this release (see lab/versions.env); re-validate before changing
         args: ["--config=/conf/config.yaml"]
         ports:
         - {name: otlp-grpc, containerPort: 4317}
+        # The image is distroless (no shell), so probes must be httpGet against health_check.
+        readinessProbe:
+          httpGet: {path: /, port: 13133}
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet: {path: /, port: 13133}
+          initialDelaySeconds: 10
+          periodSeconds: 10
         resources:
           requests: {cpu: 100m, memory: 128Mi}
-          limits: {memory: 384Mi}
+          limits: {cpu: 500m, memory: 384Mi}
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true

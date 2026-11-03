@@ -1,0 +1,33 @@
+# LAB-ONLY PKI. The root CA private key lives in a cluster Secret (cert-manager/lab-root-ca).
+# That is acceptable for a disposable lab and NOT acceptable for production; see pki/README.md.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: lab-selfsigned-bootstrap
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lab-root-ca
+  namespace: cert-manager
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  isCA: true
+  commonName: zt-lab-root-ca
+  secretName: lab-root-ca
+  duration: 8760h
+  privateKey: {algorithm: ECDSA, size: 256}
+  issuerRef: {name: lab-selfsigned-bootstrap, kind: ClusterIssuer}
+---
+# The ClusterIssuer name the repository's manifests/01-certificates.yaml expects.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: telemetry-ca
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  ca:
+    secretName: lab-root-ca

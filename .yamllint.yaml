@@ -1,0 +1,22 @@
+# yamllint config. The repo's manifests use flow-style maps heavily and omit '---' at file start.
+extends: default
+ignore: |
+  lab/.work/
+  lab/.kube/
+  evidence/runs/
+rules:
+  line-length: disable
+  document-start: disable
+  truthy:
+    check-keys: false
+  braces:
+    max-spaces-inside: 0
+    min-spaces-inside: 0
+  brackets:
+    max-spaces-inside: 0
+    min-spaces-inside: 0
+  comments:
+    min-spaces-from-content: 1
+  indentation:
+    spaces: 2
+    indent-sequences: consistent

@@ -1,0 +1,164 @@
+# LAB OTLP backend: an OpenTelemetry Collector that REQUIRES client certificates (receiver
+# `client_ca_file` => TLS RequireAndVerifyClientCert) and writes accepted telemetry to a file.
+# A read-only sidecar lets tests read that file back, giving application-level proof of receipt
+# without deploying a full observability stack. Lab only: the file is an emptyDir, not storage.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-backend
+  namespace: telemetry-secure
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otel-backend
+  namespace: telemetry-secure
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  secretName: otel-backend-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey: {rotationPolicy: Always, algorithm: ECDSA, size: 256}
+  usages: [server auth]          # server identity only; it never presents a client identity
+  dnsNames:
+  - otel-backend.telemetry-secure.svc.cluster.local
+  issuerRef: {name: telemetry-ca, kind: ClusterIssuer}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-backend-config
+  namespace: telemetry-secure
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+            tls:
+              cert_file: /certs/tls.crt
+              key_file: /certs/tls.key
+              # Setting client_ca_file makes the server demand and verify a client certificate.
+              client_ca_file: /trust/ca.crt
+              client_ca_file_reload: true
+              reload_interval: 1m
+    exporters:
+      file:
+        path: /data/otlp.jsonl
+        format: json
+        flush_interval: 1s
+        rotation: {max_megabytes: 8, max_backups: 2}
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:  {receivers: [otlp], exporters: [file]}
+        metrics: {receivers: [otlp], exporters: [file]}
+        logs:    {receivers: [otlp], exporters: [file]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-backend
+  namespace: telemetry-secure
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  replicas: 1        # one replica so the evidence file is a single source of truth
+  selector:
+    matchLabels: {app: otel-backend}
+  template:
+    metadata:
+      labels: {app: otel-backend}
+    spec:
+      serviceAccountName: otel-backend
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: collector
+        image: otel/opentelemetry-collector-contrib:0.163.2
+        args: ["--config=/conf/config.yaml"]
+        ports:
+        - {name: otlp-grpc, containerPort: 4317}
+        readinessProbe:
+          httpGet: {path: /, port: 13133}
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /, port: 13133}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests: {cpu: 50m, memory: 96Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: config, mountPath: /conf, readOnly: true}
+        - {name: certs, mountPath: /certs, readOnly: true}
+        - {name: trust, mountPath: /trust, readOnly: true}
+        - {name: data, mountPath: /data}
+      # Evidence reader: read-only view of the received-telemetry file, used via `kubectl exec ... cat`.
+      - name: evidence-reader
+        image: busybox:1.37.0
+        command: ["sh", "-c", "while true; do sleep 3600; done"]
+        resources:
+          requests: {cpu: 5m, memory: 8Mi}
+          limits: {cpu: 50m, memory: 32Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: data, mountPath: /data, readOnly: true}
+      volumes:
+      - name: config
+        configMap: {name: otel-backend-config}
+      - name: certs
+        secret: {secretName: otel-backend-tls}
+      - name: trust
+        configMap: {name: telemetry-trust-bundle}
+      - name: data
+        emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-backend
+  namespace: telemetry-secure
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  selector: {app: otel-backend}
+  ports:
+  - {name: otlp-grpc, port: 4317, targetPort: 4317}
+---
+# manifests/02-networkpolicies.yaml default-denies the namespace but only opens the gateway's
+# own ingress/egress. The backend needs its own explicit ingress rule from the gateway ONLY.
+# The backend needs no egress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-backend-allow
+  namespace: telemetry-secure
+  labels: {app.kubernetes.io/part-of: zero-trust-telemetry-lab}
+spec:
+  podSelector:
+    matchLabels: {app: otel-backend}
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels: {app: otel-gateway}
+    ports:
+    - {protocol: TCP, port: 4317}
+  egress: []

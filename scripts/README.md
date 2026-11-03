@@ -10,6 +10,8 @@ These are **runnable example scripts** that use Hubble's eBPF-backed flow teleme
 
 ## Usage
 
+These scripts use whatever `kubectl` context is current. To point them at the local lab without touching your default context, set `KUBECONFIG` for that shell only: `export KUBECONFIG="$PWD/lab/.kube/config"` (see [lab/README.md](../lab/README.md) for Hubble Relay access). The lab's own tests query Hubble through the Cilium agent instead and do not need the `hubble` CLI.
+
 ```bash
 NAMESPACE=telemetry-secure bash scripts/check-policy.sh
 DEST=telemetry-secure/otel-gateway OUT=./evidence bash scripts/verify-flows.sh

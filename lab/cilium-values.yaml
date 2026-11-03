@@ -1,0 +1,25 @@
+# Helm values for the LAB Cilium install (kind). Not production guidance.
+image:
+  pullPolicy: IfNotPresent
+ipam:
+  mode: kubernetes
+# Hubble flow visibility is what the Hubble inspection scripts and network-isolation tests read.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 300m, memory: 256Mi}
+  ui:
+    enabled: false   # not needed; saves memory
+operator:
+  replicas: 1        # single-node-pair lab; HA operator is unnecessary here
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: "1", memory: 1Gi}
+envoy:
+  enabled: false     # L7 policy / ingress features are not used by this lab
