@@ -162,8 +162,8 @@ coverage of them.
 | R2 | One CA for every hop; no SAN/identity authorization | Any issued client cert is accepted by gateway **and** backend; only NetworkPolicy separates roles |
 | R3 | NetworkPolicy is label-based; anyone who can set pod/namespace labels can join the allow-list | Governed by RBAC/admission, not tested |
 | R4 | **A compromised approved producer can emit any content, and it is stored** | mTLS/NetworkPolicy do not address truthfulness (TT). S-cases show only that the *action* is gated |
-| R5 | During rotation the two gateway replicas served different certs for a measurable window | In 3 runs one pod (and the Service) switched ≈ 55–60 s after reissuance and the other ≈ 120 s; clients must trust the CA, not a pinned leaf |
-| R6 | Gateway→backend client-cert reload not observed; CA rotation with overlap not tested | ROT5, ROT6 are NOT RUN |
+| R5 | During rotation the two gateway replicas can serve different certs for a measurable window | Across five runs the switch to the new certificate took roughly 55–125 s after reissuance, and the replicas sometimes differed by about a minute; clients must trust the CA, not a pinned leaf |
+| R6 | Rotation was exercised once per scenario on one CA pair: leaf re-issue (ROT1–4) and CA B with trust overlap plus exporter pickup (CAR0–5). No revocation, intermediates, or client-certificate rotation | single runs only |
 | R7 | Exporter tests use a probe Collector that mirrors the gateway's TLS options | Live gateway config is checked only indirectly (D1 works) |
 | R8 | Backend storage is an `emptyDir`; evidence is not tamper-resistant or retained | Storage integrity (SI) is **not implemented** |
 | R9 | Hubble/Cilium are trusted observers; flow retention is a small ring buffer, per node | Absence of a flow proves little |

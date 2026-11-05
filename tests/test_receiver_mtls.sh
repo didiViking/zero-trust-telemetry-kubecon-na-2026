@@ -16,12 +16,21 @@ expect_rejected() {
   run_sender "$job"; res="$SENDER_RESULT"
   cls="$(classify_failure "$SENDER_LOG")"
   n="$(backend_count "$SEND_RUN_ID")"
+  wnote=""
+  if [ "$cls" = PEER_RESET ]; then
+    # The Go client can lose the race against the gateway closing after a TLS alert and see only a reset.
+    # An independent openssl witness with the SAME credential must observe the explicit alert.
+    w="$(tls_witness "$NS_CLIENT" "$GATEWAY_FQDN" "${SEND_SECRET-traffic-generator-tls}")"
+    wcls="$(classify_failure "$w")"; wnote=" (client saw reset; witness_class=$wcls)"
+    [ "$wcls" = "$want" ] && cls="$want"
+    SENDER_LOG="witness: $w | client: $SENDER_LOG"
+  fi
   if [ "$res" = "failed" ] && [ "$cls" = "$want" ] && [ "${n:-0}" -eq 0 ]; then
     record "$T" "$id" PASS "$desc" "sender fails with $want; backend receives nothing" \
-      "sender=$res class=$cls backend_batches=$n" "$SENDER_LOG"
+      "sender=$res class=$cls backend_batches=$n$wnote" "$SENDER_LOG"
   else
     record "$T" "$id" FAIL "$desc" "sender fails with $want; backend receives nothing" \
-      "sender=$res class=$cls backend_batches=$n" "$SENDER_LOG"
+      "sender=$res class=$cls backend_batches=$n$wnote" "$SENDER_LOG"
   fi
 }
 

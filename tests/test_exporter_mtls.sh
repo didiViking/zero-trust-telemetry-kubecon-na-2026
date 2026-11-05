@@ -145,13 +145,20 @@ else
   exit_with_status "$T"
 fi
 
-expect_exporter_rejected() {  # <case> <desc> <want-class> ; uses PROBE_LOG / PROBE_RID
-  local id="$1" desc="$2" want="$3" cls n
+expect_exporter_rejected() {  # <case> <desc> <want-class> [witness-client-secret] ; uses PROBE_LOG / PROBE_RID
+  local id="$1" desc="$2" want="$3" wsec="${4-__none__}" cls n note="" w wcls
   cls="$(classify_failure "$PROBE_LOG")"; n="$(backend_count "$PROBE_RID")"
+  if [ "$cls" = PEER_RESET ] && [ "$wsec" != "__none__" ]; then
+    # reset alone is ambiguous: require the openssl witness (same credential) to see the explicit alert
+    w="$(tls_witness "$NS" "$BACKEND_FQDN" "$wsec" 'zt-lab/probe: exporter-mtls')"
+    wcls="$(classify_failure "$w")"; note=" (exporter saw reset; witness_class=$wcls)"
+    [ "$wcls" = "$want" ] && cls="$want"
+    PROBE_LOG="witness: $w | exporter: $PROBE_LOG"
+  fi
   if [ "$cls" = "$want" ] && [ "${n:-0}" -eq 0 ]; then
-    record "$T" "$id" PASS "$desc" "exporter error class $want; backend receives nothing" "class=$cls backend_batches=$n" "$PROBE_LOG"
+    record "$T" "$id" PASS "$desc" "exporter error class $want; backend receives nothing" "class=$cls backend_batches=$n$note" "$PROBE_LOG"
   else
-    record "$T" "$id" FAIL "$desc" "exporter error class $want; backend receives nothing" "class=$cls backend_batches=$n" "$PROBE_LOG"
+    record "$T" "$id" FAIL "$desc" "exporter error class $want; backend receives nothing" "class=$cls backend_batches=$n$note" "$PROBE_LOG"
   fi
 }
 
@@ -166,10 +173,7 @@ expect_exporter_rejected E3 "exporter rejects a backend when the dialed name/IP 
 # must independently observe the explicit "certificate required" alert after a SUCCESSFUL server-cert verification.
 probe_case zt-test-probe-e4 "${BACKEND_FQDN}:4317" telemetry-trust-bundle ""
 cls4="$(classify_failure "$PROBE_LOG")"; n4="$(backend_count "$PROBE_RID")"
-TOOL_LABELS='zt-lab/probe: exporter-mtls'; TOOL_WAIT=40; export TOOL_LABELS TOOL_WAIT
-witness_out="$(run_tool_pod "$NS" zt-test-witness-e4 - "$OPENSSL_IMAGE" \
-  "printf x | timeout 8 openssl s_client -connect ${BACKEND_FQDN}:4317 -CAfile /trust/ca.crt -verify_hostname ${BACKEND_FQDN} -verify_return_error -alpn h2 2>&1 | grep -E 'Verify return|alert|error|Protocol|Cipher' | head -10")"
-unset TOOL_LABELS TOOL_WAIT
+witness_out="$(tls_witness "$NS" "$BACKEND_FQDN" "" 'zt-lab/probe: exporter-mtls')"
 wcls="$(classify_failure "$witness_out")"
 if { [ "$cls4" = TLS_CLIENT_CERT_REQUIRED ] || [ "$cls4" = PEER_RESET ]; } && [ "$wcls" = TLS_CLIENT_CERT_REQUIRED ] && [ "${n4:-0}" -eq 0 ]; then
   record "$T" E4 PASS "backend rejects an exporter that presents no client certificate" \
@@ -182,7 +186,7 @@ else
 fi
 
 probe_case zt-test-probe-e5 "${BACKEND_FQDN}:4317" telemetry-trust-bundle zt-test-rogue-client-tls
-expect_exporter_rejected E5 "backend rejects an exporter presenting a client certificate from an untrusted CA" TLS_CLIENT_CERT_REJECTED
+expect_exporter_rejected E5 "backend rejects an exporter presenting a client certificate from an untrusted CA" TLS_CLIENT_CERT_REJECTED zt-test-rogue-client-tls
 
 # E6 transport protection: the witness negotiated a modern TLS version with the backend (observed, not assumed)
 if grep -qE 'Protocol *: *TLSv1\.[23]' <<<"$witness_out"; then

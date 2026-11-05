@@ -24,10 +24,6 @@ use_test_namespace "$NS_CLIENT"
 WINDOW="${ROT_WINDOW_SECONDS:-240}"     # sender duration; also bounds how long we wait for reload
 PROBE_NAME=zt-test-rot-prober
 
-secret_fp() {  # fingerprint of the PUBLIC leaf certificate currently in the gateway Secret
-  k -n "$NS_GATEWAY" get secret otel-gateway-tls -o 'jsonpath={.data.tls\.crt}' | base64 -d \
-    | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2
-}
 secret_spki() {  # sha256 of the public key (changes iff the private key was rotated)
   k -n "$NS_GATEWAY" get secret otel-gateway-tls -o 'jsonpath={.data.tls\.crt}' | base64 -d \
     | openssl x509 -noout -pubkey | openssl dgst -sha256 | awk '{print $NF}'
@@ -40,7 +36,7 @@ run_sender zt-test-rot-pre
 if [ "$SENDER_RESULT" != succeeded ] || ! wait_backend_receipt "$SEND_RUN_ID" 30; then
   record "$T" ROT0 FAIL "pre-rotation delivery works (positive control)" "sender succeeds; backend records marker" \
     "sender=$SENDER_RESULT class=$(classify_failure "$SENDER_LOG")" "$SENDER_LOG"
-  for c in ROT1 ROT2 ROT3 ROT4 ROT5 ROT6; do record "$T" "$c" "NOT RUN" "rotation case" "n/a" "positive control ROT0 failed"; done
+  for c in ROT1 ROT2 ROT3 ROT4; do record "$T" "$c" "NOT RUN" "rotation case" "n/a" "positive control ROT0 failed"; done
   exit_with_status "$T"
 fi
 record "$T" ROT0 PASS "pre-rotation delivery works (positive control)" "sender succeeds; backend records marker" "ok"
@@ -50,7 +46,7 @@ set -- $POD_IPS
 P1="${1:-}"; P2="${2:-}"
 [ -n "$P1" ] || { record "$T" ROT1 "NOT RUN" "rotation" "n/a" "no gateway pod IPs"; exit_with_status "$T"; }
 P2="${P2:-$P1}"   # tolerate a single-replica gateway
-OLD_FP="$(secret_fp)"; OLD_SPKI="$(secret_spki)"
+OLD_FP="$(gw_secret_fp)"; OLD_SPKI="$(secret_spki)"
 
 # ---- start long-lived sender and fresh-connection prober -------------------------------------------
 LL_RID="$(new_run_id)"
@@ -88,18 +84,18 @@ while [ "$i" -lt 60 ]; do
 done
 if [ "$base_ok" -ne 1 ]; then
   record "$T" ROT1 "NOT RUN" "rotation" "n/a" "prober never observed baseline fingerprint $OLD_FP on all targets" "$(probe_lines | tail -6)"
-  for c in ROT2 ROT3 ROT4 ROT5 ROT6; do record "$T" "$c" "NOT RUN" "rotation case" "n/a" "baseline not established"; done
+  for c in ROT2 ROT3 ROT4; do record "$T" "$c" "NOT RUN" "rotation case" "n/a" "baseline not established"; done
   exit_with_status "$T"
 fi
 
 # ---- trigger reissuance ------------------------------------------------------------------------------
 T_TRIGGER="$(date +%s)"
-k -n "$NS_GATEWAY" patch certificate otel-gateway --subresource=status --type=json -p "[{\"op\":\"add\",\"path\":\"/status/conditions/-\",\"value\":{\"type\":\"Issuing\",\"status\":\"True\",\"reason\":\"ManuallyTriggered\",\"message\":\"re-issuance triggered by lab rotation test\",\"lastTransitionTime\":\"$(date -u +%FT%TZ)\"}}]" >/dev/null 2>&1 \
+trigger_reissue "$NS_GATEWAY" otel-gateway \
   || record "$T" ROT1 FAIL "could not trigger re-issuance" "status patch accepted" "patch rejected"
 
 NEW_FP="$OLD_FP"; i=0
 while [ "$i" -lt 90 ]; do
-  NEW_FP="$(secret_fp)"; [ "$NEW_FP" != "$OLD_FP" ] && break
+  NEW_FP="$(gw_secret_fp)"; [ "$NEW_FP" != "$OLD_FP" ] && break
   sleep 2; i=$((i + 2))
 done
 T_ISSUED="$(date +%s)"; NEW_SPKI="$(secret_spki)"
@@ -173,9 +169,6 @@ else
   fi
 fi
 
-KNOWN_GAP=1 record "$T" ROT5 "NOT RUN" "gateway EXPORTER (gateway -> backend) starts using the rotated client certificate" "n/a" \
-  "not observable here: the backend does not log peer certificate identity, so delivery continuing cannot distinguish old from new client cert. The blueprint sets exporter reload_interval, but this is unverified."
-KNOWN_GAP=1 record "$T" ROT6 "NOT RUN" "CA rotation with trust-bundle overlap" "n/a" \
-  "not implemented: this test rotates the leaf certificate only; the lab has a single root CA and no overlap procedure."
+# Exporter (gateway -> backend) certificate pickup and CA rotation are covered by test_ca_rotation.sh (CAR0-CAR5).
 
 exit_with_status "$T"

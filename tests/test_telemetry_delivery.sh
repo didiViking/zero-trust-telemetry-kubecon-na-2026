@@ -18,7 +18,12 @@ if [ "$res" != "succeeded" ]; then
     "sender job succeeded" "sender job $res (class=$(classify_failure "$SENDER_LOG"))" "$SENDER_LOG"
 else
   if wait_backend_receipt "$rid" 30; then
-    t="$(backend_count "$rid" resourceSpans)"; m="$(backend_count "$rid" resourceMetrics)"; l="$(backend_count "$rid" resourceLogs)"
+    # Signals arrive in separate exports: poll (bounded) until all three are present, not once.
+    for _ in $(seq 1 30); do
+      t="$(backend_count "$rid" resourceSpans)"; m="$(backend_count "$rid" resourceMetrics)"; l="$(backend_count "$rid" resourceLogs)"
+      [ "${t:-0}" -ge 1 ] && [ "${m:-0}" -ge 1 ] && [ "${l:-0}" -ge 1 ] && break
+      sleep 1
+    done
     logs_n="$(backend_record_count "$rid")"
     if [ "${t:-0}" -ge 1 ] && [ "${m:-0}" -ge 1 ] && [ "${l:-0}" -ge 1 ]; then
       record "$T" D1 PASS "valid client cert via approved source delivers telemetry (all 3 signals)" \

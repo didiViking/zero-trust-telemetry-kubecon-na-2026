@@ -31,7 +31,13 @@ wait_backend_receipt "$RUN_ID" 30 || {
 rc=0
 for s in $signals; do
   case "$s" in traces) sig=resourceSpans ;; metrics) sig=resourceMetrics ;; logs) sig=resourceLogs ;; *) die "bad signal $s" ;; esac
-  n="$(backend_count "$RUN_ID" "$sig")"
+  # Signals arrive via separate exports, so wait (bounded) for each one rather than checking once.
+  n=0
+  for _ in $(seq 1 30); do
+    n="$(backend_count "$RUN_ID" "$sig")"
+    [ "${n:-0}" -ge 1 ] && break
+    sleep 1
+  done
   if [ "${n:-0}" -ge 1 ]; then log "PASS  backend received $s ($n batch(es))"; else log "FAIL  backend did not record $s"; rc=1; fi
 done
 [ "$rc" -eq 0 ] && log "backend receipt proven for run_id=$RUN_ID"

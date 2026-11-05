@@ -45,5 +45,5 @@ pushes or tags a release automatically**; every step that publishes needs a pers
 - Prometheus federation authentication, Loki/Grafana tenant isolation, WORM/append-only storage, Falco/audit detection, and tail-sampling (T1) scenarios are **not implemented**; only a standalone detection-only hash-chain example exists (`examples/tamper-evident/`).
 - The AIOps consumer is a deterministic simulation, not an LLM.
 - One CA signs every hop in the lab; no identity-level authorization.
-- Rotation: CA-overlap rotation and gateway-exporter client-cert reload are NOT RUN.
+- Rotation: exercised once per scenario (leaf, and one CA pair with overlap); no revocation, intermediates, or producer-certificate rotation. Timing between replicas varied between runs (about 10–120 s).
 - Only macOS/arm64 + Docker Desktop has been exercised.

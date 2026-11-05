@@ -12,8 +12,10 @@ A case that could not run is **never** counted as passed.
 | `test_telemetry_delivery.sh` | D1 | Valid cert + approved source ⇒ traces, metrics, logs reach the backend | telemetrygen Job; marker found in backend file |
 | `test_receiver_mtls.sh` | R1–R5 | Gateway **requires** a client cert and rejects an untrusted one; client rejects an untrusted gateway CA and a name not in the SANs | same sender pod spec each time; only the TLS credential/CA/name changes |
 | `test_exporter_mtls.sh` | E1–E5 | Gateway-style exporter rejects a backend with untrusted CA or wrong name; backend rejects no / untrusted client cert | throw-away probe Collector with the gateway's exporter TLS settings, plus an `openssl s_client` witness for the no-cert case |
-| `test_network_isolation.sh` | N1–N6 (+ N2h/N3h/N4h) | Unauthorized sources, gateway bypass, and non-allow-listed egress are blocked; a *valid* cert from the wrong place fails at the network layer | busybox TCP probes by ClusterIP + Hubble DROPPED corroboration |
-| `test_certificate_rotation.sh` | ROT0–ROT6 | A new cert/key is actually served after reissuance; delivery behaviour during the window is measured | long-lived sender + fresh-connection prober, see below. ~5 min |
+| `test_network_isolation.sh` | N1–N6, N4b (+ Hubble corroboration N2h/N3h/N4h/N4bh) | Unauthorized sources, gateway bypass, and non-allow-listed egress are blocked; a *valid* cert from the wrong place fails at the network layer | busybox TCP probes by ClusterIP + Hubble DROPPED corroboration |
+| `test_certificate_rotation.sh` | ROT0–ROT4 | A new cert/key is actually served after reissuance; delivery behaviour during the window is measured | long-lived sender + fresh-connection prober, see below. ~5 min |
+| `test_ca_rotation.sh` | CAR0–CAR5 | CA rotation with trust overlap under traffic; the gateway **exporter** presents the rotated certificate | backend is made to trust only a new CA B (control: it first rejects the old cert); everything temporary is restored and re-verified. ~4 min |
+| `mutation-check.sh` (`make mutation-check`, not in `make test`) | M1–M5 | The tests above go red when the control they cover is deliberately broken | breaks one control at a time in the lab, restores, re-verifies. ~6 min |
 | `../scenarios/poisoned-log/test.sh` | S1–S7 | Poisoned-but-authenticated telemetry → proposed unsafe action → denied before (simulated) execution | see its README |
 
 ## Design rules the tests follow
@@ -50,13 +52,28 @@ A case that could not run is **never** counted as passed.
   records the served certificate fingerprint. Reissuance is triggered via the cert-manager `Issuing`
   condition (what `cmctl renew` does). `ROT4` reports what happened in that run (records lost, failed fresh
   handshakes). **It is a measurement from a single run, not a zero-downtime guarantee.**
-* **Not covered (recorded NOT RUN, with reasons):** exporter (gateway→backend) client-cert reload (ROT5: the
-  backend does not log peer identity, so success cannot distinguish old from new cert), CA rotation with trust
-  overlap (ROT6: not implemented).
+* **Exporter certificate pickup (CAR4).** The backend cannot log peer identity, so this is shown indirectly:
+  after the gateway certificate is re-issued from CA B, the backend is made to trust *only* B and restarted
+  (forcing the exporter to reconnect). CAR0 first proves the backend really rejects the old A-issued
+  certificate; delivery succeeding afterwards means the exporter presented a B-issued one.
+* **Not covered:** revocation, intermediate CAs, the Collector exporter's behaviour on other versions, and
+  rotation of the *client* (producer) certificates.
 
-## Mutation check (manual)
+## Mutation check
 
-To convince yourself a test can fail, break the control it covers on a throw-away lab and re-run it, e.g.
-delete `client_ca_file` from `lab/backend/backend.yaml`'s receiver and `make deploy`: `E4`/`E5` must FAIL.
-(The scenario test contains an automated version of this idea: S7.) This was **not** executed as part of the
-initial validation.
+`make mutation-check` breaks one control at a time in the lab and requires the covering test to go red while
+its positive control stays green. A mutation that goes undetected is reported as FAIL (the test is blind).
+
+| Mutation | Must FAIL | Must still PASS |
+|---|---|---|
+| M1 backend stops requiring client certs | E4, E5 | E1–E3 |
+| M2 gateway stops requiring client certs | R2, R3 | R1, R4, R5 |
+| M3 gateway ingress policy opened | N2, N6 | N1, N3, N4, N4b, N5 |
+| M4 backend ingress policy opened | N4b | N1–N4 |
+| M5 approved-source egress allow-list opened | N5 | N1–N4 |
+
+N3 and N4 intentionally stay green under M3/M4: they are blocked by *two* layers (source-side policy and
+destination policy), so opening one layer changes nothing. The first mutation run showed exactly this and
+led to adding **N4b**, which uses a source with open egress to isolate the backend's ingress policy. The
+scenario test's S7 is an automated mutation check of the authorizer. Mutations are limited to configuration
+the lab owns; they do not test the Collector's TLS implementation.

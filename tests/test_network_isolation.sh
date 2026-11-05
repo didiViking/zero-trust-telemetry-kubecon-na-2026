@@ -67,7 +67,7 @@ if [ "$c1" = CONNECTED ]; then
     "TCP CONNECTED" "$c1" "$log1"
 else
   record "$T" N1 FAIL "approved source pod can connect to gateway:4317 (positive control)" "TCP CONNECTED" "$c1" "$log1"
-  for c in N2 N2h N3 N3h N4 N4h N5 N6; do record "$T" "$c" "NOT RUN" "network denial case" "n/a" "positive control N1 failed"; done
+  for c in N2 N2h N3 N3h N4 N4h N4b N4bh N5 N6; do record "$T" "$c" "NOT RUN" "network denial case" "n/a" "positive control N1 failed"; done
   exit_with_status "$T"
 fi
 
@@ -108,6 +108,24 @@ if [ "$c4" = TIMEOUT_OR_DROP ]; then
 else
   record "$T" N4 FAIL "approved source pod cannot connect directly to backend:4317" "TIMEOUT_OR_DROP" "$c4" "$log4"
   record "$T" N4h "NOT RUN" "Hubble corroboration for N4" "n/a" "N4 failed"
+fi
+
+# N4b backend ingress policy IN ISOLATION. N4 above is blocked by two layers (the source's egress allow-list AND
+# the backend's ingress policy), so it cannot tell which one works. Here the source namespace has no policies
+# (egress open, proven by the control), so only the backend's ingress policy can stop the connection.
+log4b="$(run_tool_pod "$NS_UNTRUSTED" zt-test-net-bypass-open true "$BUSYBOX_IMAGE" "$(tcp_script "probe apiserver $API_IP 443; probe backend $BE_IP 4317")")"
+ctl4b="$(tcp_class "$log4b" apiserver)"; c4b="$(tcp_class "$log4b" backend)"
+if [ "$ctl4b" != CONNECTED ]; then
+  record "$T" N4b "NOT RUN" "backend ingress policy blocks a source with open egress" "n/a" "egress control was $ctl4b" "$log4b"
+  record "$T" N4bh "NOT RUN" "Hubble corroboration for N4b" "n/a" "N4b control failed"
+elif [ "$c4b" = TIMEOUT_OR_DROP ]; then
+  record "$T" N4b PASS "a source with open egress (control proven) still cannot connect to backend:4317 (backend ingress policy in isolation)" \
+    "control CONNECTED; backend TIMEOUT_OR_DROP" "control=$ctl4b backend=$c4b" "$log4b"
+  hubble_corroborate N4bh "$NS_UNTRUSTED/zt-test-net-bypass-open" 4317
+else
+  record "$T" N4b FAIL "a source with open egress (control proven) still cannot connect to backend:4317" \
+    "control CONNECTED; backend TIMEOUT_OR_DROP" "control=$ctl4b backend=$c4b" "$log4b"
+  record "$T" N4bh "NOT RUN" "Hubble corroboration for N4b" "n/a" "N4b failed"
 fi
 
 # N5 egress allow-list: approved source cannot reach an arbitrary in-cluster destination

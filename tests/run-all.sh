@@ -20,7 +20,7 @@ write_meta
 : > "$ZT_RUN_DIR/results.jsonl"
 log "evidence directory: ${ZT_RUN_DIR#"$REPO_ROOT"/}"
 
-DEFAULT_TESTS="test_telemetry_delivery.sh test_receiver_mtls.sh test_exporter_mtls.sh test_network_isolation.sh test_certificate_rotation.sh ../scenarios/poisoned-log/test.sh"
+DEFAULT_TESTS="test_telemetry_delivery.sh test_receiver_mtls.sh test_exporter_mtls.sh test_network_isolation.sh test_certificate_rotation.sh test_ca_rotation.sh ../scenarios/poisoned-log/test.sh"
 overall=0
 for t in ${TESTS:-$DEFAULT_TESTS}; do
   log "==== $t"

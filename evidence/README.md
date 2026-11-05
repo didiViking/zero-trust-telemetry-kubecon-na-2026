@@ -25,6 +25,12 @@ Each result: `test`, `case`, `status` (`PASS` \| `FAIL` \| `NOT RUN`), `time_utc
   unreachable, an observation is impossible in this lab). **NOT RUN is never a pass**: `tests/run-all.sh`
   exits non-zero (3) if any case is NOT RUN and none failed.
 
+## Citing results
+
+Cite a run only if its `meta.json` has `working_tree_dirty: false`, the `git_commit` is the commit being
+released, and the run was a clean-room procedure (`make lab-down` first). Anything else is a development
+observation.
+
 ## Sanitization
 
 * Scripts read only the public `tls.crt` of Secrets (via jsonpath); `tls.key` / `ca` private keys are never

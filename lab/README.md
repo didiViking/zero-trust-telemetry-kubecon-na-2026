@@ -1,5 +1,7 @@
 # Local mTLS lab
 
+**New to this? Start with [GETTING-STARTED.md](GETTING-STARTED.md)** (`make doctor && make quickstart`).
+
 A disposable **kind + Cilium/Hubble + cert-manager** cluster that supplies everything the blueprints in
 `manifests/` say they do *not* provide: a CA, a trust bundle, an OTLP backend that requires client
 certificates, and a synthetic-telemetry client. From a clean checkout you can start it, send telemetry

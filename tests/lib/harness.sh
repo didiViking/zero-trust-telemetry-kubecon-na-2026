@@ -93,7 +93,7 @@ trap 'exit 130' INT TERM
 #   TLS_SERVER_CERT_UNTRUSTED client could not chain the server cert to its CA
 #   TLS_SERVER_NAME_MISMATCH  server cert valid but not for the name/IP dialed
 #   DNS_FAILURE | CONN_REFUSED | PEER_RESET | NETWORK_TIMEOUT | OTHER | NONE
-#   PEER_RESET (RST after TCP connect) is NOT accepted as proof of an auth rejection on its own: the
+#   PEER_RESET (RST / broken pipe after TCP connect) is NOT accepted as proof of an auth rejection on its own: the
 #   Go client can lose the race against the server closing after a TLS alert. It must be paired with
 #   an openssl witness that observed the explicit alert.
 classify_failure() {
@@ -105,7 +105,7 @@ classify_failure() {
     *"x509: certificate is valid for"*|*"doesn't contain any IP SANs"*|*"x509: cannot validate certificate for"*) echo TLS_SERVER_NAME_MISMATCH ;;
     *"no such host"*|*"Temporary failure in name resolution"*|*"server misbehaving"*|*"NXDOMAIN"*) echo DNS_FAILURE ;;
     *"connection refused"*)                                                 echo CONN_REFUSED ;;
-    *"connection reset by peer"*)                                           echo PEER_RESET ;;   # ambiguous alone: needs a TLS witness
+    *"connection reset by peer"*|*"broken pipe"*)                           echo PEER_RESET ;;   # ambiguous alone: needs a TLS witness
     *"i/o timeout"*|*"context deadline exceeded"*|*"DeadlineExceeded"*|*"exporter export timeout"*) echo NETWORK_TIMEOUT ;;
     "")                                                                     echo NONE ;;
     *)                                                                      echo OTHER ;;
@@ -310,3 +310,64 @@ YAML
 # gateway_cluster_ip: IP of the gateway Service (used to provoke a hostname mismatch).
 gateway_cluster_ip() { k -n "$NS_GATEWAY" get svc otel-gateway -o 'jsonpath={.spec.clusterIP}'; }
 backend_cluster_ip() { k -n "$NS_GATEWAY" get svc otel-backend -o 'jsonpath={.spec.clusterIP}'; }
+
+# ---------- snapshot / restore of live lab objects (for tests that temporarily change the lab) -----------
+# snapshot_obj saves an object's spec; restore_snapshots puts every saved object back with `kubectl replace`
+# (NOT `apply`: apply cannot revert a field it did not last set). Register restore_snapshots as a cleanup.
+SNAP_FILES=()
+snapshot_obj() {  # snapshot_obj <ns> <kind> <name>
+  local f="$ZT_RUN_DIR/snap/$1.$2.$3.json"
+  mkdir -p "$ZT_RUN_DIR/snap"
+  k -n "$1" get "$2" "$3" -o json \
+    | jq 'del(.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.generation,.metadata.managedFields,.status)' > "$f" || return 1
+  SNAP_FILES+=("$f")
+}
+restore_snapshots() {
+  local f
+  # Idempotent on purpose: callers (e.g. the mutation check) restore after EVERY step, so the list is kept.
+  for f in "${SNAP_FILES[@]:-}"; do [ -n "$f" ] && k replace -f "$f" >/dev/null 2>&1; done
+}
+
+# verify_snapshots: confirm each ConfigMap/NetworkPolicy snapshot equals the live object (spec/data only).
+# Deployments and Certificates are skipped: controllers legitimately annotate them (revision, restartedAt).
+# Prints differing files; returns non-zero if any differ.
+verify_snapshots() {
+  local f kind rc=0 want have
+  for f in "${SNAP_FILES[@]:-}"; do
+    [ -n "$f" ] || continue
+    kind="$(jq -r .kind "$f")"
+    case "$kind" in ConfigMap|NetworkPolicy) ;; *) continue ;; esac
+    want="$(jq -S '{data, spec}' "$f")"
+    have="$(k -n "$(jq -r .metadata.namespace "$f")" get "$kind" "$(jq -r .metadata.name "$f")" -o json | jq -S '{data, spec}')"
+    [ "$want" = "$have" ] || { echo "DIFFERS: $(basename "$f")"; rc=1; }
+  done
+  return "$rc"
+}
+
+# trigger_reissue <ns> <certificate>: force re-issuance exactly as `cmctl renew` does (Issuing condition).
+trigger_reissue() {
+  k -n "$1" patch certificate "$2" --subresource=status --type=json -p "[{\"op\":\"add\",\"path\":\"/status/conditions/-\",\"value\":{\"type\":\"Issuing\",\"status\":\"True\",\"reason\":\"ManuallyTriggered\",\"message\":\"re-issuance triggered by lab test\",\"lastTransitionTime\":\"$(date -u +%FT%TZ)\"}}]" >/dev/null 2>&1
+}
+
+# Public-certificate helpers (read ONLY tls.crt; never the key).
+gw_secret_fp()     { k -n "$NS_GATEWAY" get secret otel-gateway-tls -o 'jsonpath={.data.tls\.crt}' | base64 -d | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2; }
+gw_secret_issuer() { k -n "$NS_GATEWAY" get secret otel-gateway-tls -o 'jsonpath={.data.tls\.crt}' | base64 -d | openssl x509 -noout -issuer; }
+
+# rollout_wait <deploy...>: restart and wait for the gateway namespace deployments (bounded).
+rollout_restart_wait() {
+  local d
+  for d in "$@"; do k -n "$NS_GATEWAY" rollout restart "deploy/$d" >/dev/null || return 1; done
+  for d in "$@"; do k -n "$NS_GATEWAY" rollout status "deploy/$d" --timeout=150s >/dev/null || return 1; done
+}
+
+# tls_witness <ns> <host> <client-secret|""> [flow-style extra labels]: an independent `openssl s_client`
+# observation of how <host>:4317 treats the given client credential, run from a pod in <ns>. Used when a Go
+# client reports only an ambiguous PEER_RESET/broken pipe (it can lose the race against the server closing
+# after sending a TLS alert). The witness reliably reads the explicit alert. Prints sanitized key lines.
+tls_witness() {
+  local ns="$1" host="$2" sec="$3" labels="${4:-}" cert_args="" name
+  [ -n "$sec" ] && cert_args="-cert /client/tls.crt -key /client/tls.key"
+  name="zt-test-witness-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 5)"
+  TOOL_LABELS="$labels" TOOL_WAIT=40 run_tool_pod "$ns" "$name" true "$OPENSSL_IMAGE" \
+    "(printf x; sleep 2) | timeout 8 openssl s_client -connect ${host}:4317 -CAfile /trust/ca.crt -verify_hostname ${host} ${cert_args} -verify_return_error -alpn h2 2>&1 | grep -E 'Verify return|alert|error|Protocol|Cipher' | head -10" "$sec"
+}

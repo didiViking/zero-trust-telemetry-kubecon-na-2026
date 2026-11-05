@@ -3,7 +3,7 @@
 Conference companion resources for evaluating and adapting security controls around OpenTelemetry and
 Kubernetes telemetry pipelines.
 
-**Status:** educational. A **runnable local lab** now exercises the mTLS gateway/backend blueprint on a
+**Status:** educational. **Evidence is weak and unreplicated:** the lab tests have been run only on one macOS/Docker Desktop laptop, on an uncommitted working tree, and have **not yet been re-run on a clean commit** (see [claims-and-evidence.md](docs/claims-and-evidence.md)). Do not quote pass counts until they are. A **runnable local lab** now exercises the mTLS gateway/backend blueprint on a
 disposable kind cluster, with executable tests and one simulated "poisoned telemetry → denied action"
 scenario. Everything else is still an **illustrative blueprint or future work** (table below). Nothing here
 is audited, production-certified, battle-tested, or a turnkey deployment. Treat all labels, names,
@@ -18,20 +18,38 @@ endpoints, trust roots, versions, and policy selectors as environment-specific.
 | Poisoned log → denied action (deterministic simulation, not an LLM) | **Runnable** | [`scenarios/poisoned-log/`](scenarios/poisoned-log/README.md) |
 | Worked threat model for the lab architecture | Written; status per claim | [`threat-model/WORKED-EXAMPLE.md`](threat-model/WORKED-EXAMPLE.md), [`docs/claims-and-evidence.md`](docs/claims-and-evidence.md) |
 | Gateway Deployment, Certificate, NetworkPolicies | **Blueprint**, reused by the lab (with fixes, see lab README) | [`manifests/`](manifests/README.md) |
-| Hubble inspection scripts | **Blueprint scripts**; usable against the lab | [`scripts/`](scripts/README.md) |
+| Hubble flow-observation scripts (this is the entire "eBPF" piece: Hubble verdict records, **no eBPF programs are loaded, inspected or verifier-checked**) | **Blueprint scripts**; usable against the lab | [`scripts/`](scripts/README.md) |
 | Threat model template | Template | [`threat-model/TEMPLATE.md`](threat-model/TEMPLATE.md) |
 | Prometheus federation authentication | **Not implemented** | — |
 | Loki/Grafana tenant-isolated queries | **Not implemented** | — |
 | Tamper-evident / append-only storage | **Not implemented** | — |
 | Falco / Kubernetes audit detections | **Not implemented** | — |
 | Tail-sampling manipulation (T1) | **Not implemented** | — |
-| CI | **Not added yet** | — |
+| CI (`.github/workflows/ci.yml`) | **Written, never run on GitHub.** Static job = well-formedness only (not a control test). Integration job is manual-only and has never been executed anywhere | [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md) |
 
 Evidence conventions are in [`evidence/README.md`](evidence/README.md). A test result is only claimed in
 [`docs/claims-and-evidence.md`](docs/claims-and-evidence.md) if the case executed; `NOT RUN` is reported as
 `NOT RUN`, never as passed.
 
+## Talk topics vs. what this repository delivers
+
+| Topic in the talk outline | Delivered here? |
+|---|---|
+| mTLS between Collectors and backend; cert-manager identity | **Yes (lab)** — tested on one laptop, see claims doc |
+| NetworkPolicy default-deny / blast radius | **Yes (lab)** |
+| Hubble/eBPF "independent verification" | **Partly** — Hubble flow *observation* corroborating drops. No verifier scripts, no inspection of loaded eBPF programs; Hubble does not prove TLS identity or kernel isolation |
+| Tail-sampling injection (T1) | **No** |
+| Federation pivot / certificate-authenticated federation (T2) | **No** |
+| Query-driven exfiltration; Loki/Grafana tenant isolation (T3) | **No** |
+| Append-only storage / tamper detection | **Detection-only hash-chain example**, standalone; no append-only enforcement, not connected to the pipeline |
+| Falco + Kubernetes-audit policy-as-code | **No** |
+| Unsafe AIOps decisions from poisoned telemetry | **Simulation only** (deterministic mock, not an LLM) |
+
+Slides and abstract text should not claim more than the "Yes" and "Partly" rows.
+
 ## Quick start (lab)
+
+First time? `make doctor && make quickstart` runs a guided ~1 minute demo (accepted, rejected by TLS, blocked by network, denied by policy). Walkthrough: [`lab/GETTING-STARTED.md`](lab/GETTING-STARTED.md). The individual steps:
 
 ```bash
 make lab-up          # disposable cluster 'zt-telemetry-lab' with its OWN kubeconfig (lab/.kube/config)
@@ -58,7 +76,7 @@ Blueprints in `manifests/` are not a complete cluster installation. Before attem
 ## What these artifacts demonstrate (and do not)
 
 - mTLS can authenticate peers and protect transport; it does not establish that the telemetry content itself is truthful. The poisoned-log scenario shows an authenticated producer delivering instruction-shaped text.
-- cert-manager can renew/reissue certificates and rotate private keys; **zero-downtime rotation is conditional** on certificate/key reload (or safe rolling replacement), CA overlap, and successful connection tests. The rotation test *measures* one run; it does not establish a general guarantee, and does not cover CA rotation or the gateway exporter's client-cert reload.
+- cert-manager can renew/reissue certificates and rotate private keys; **zero-downtime rotation is conditional** on certificate/key reload (or safe rolling replacement), CA overlap, and successful connection tests. The rotation test *measures* one run; it does not establish a general guarantee, and covers only one CA pair (no revocation, intermediates or producer-certificate rotation).
 - NetworkPolicy limits selected L3/L4 flows; it is not application-layer authorization or a substitute for credential hygiene. In the lab it is also what separates the producer from the backend, because all certificates share one CA.
 - Hubble provides observed datapath verdicts from eBPF-backed telemetry. It **does not verify TLS identities, cryptographic integrity, or kernel isolation in full**. The eBPF verifier does not prove a policy is correct.
 - The threat model includes Prometheus federation, logs, Falco, storage integrity, and AIOps; of these only the AIOps action-authorization path is simulated here.
